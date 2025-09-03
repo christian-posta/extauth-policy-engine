@@ -1,0 +1,29 @@
+# Sample AgentGateway configuration that uses the policy engine
+# This shows how to integrate the external authorization service
+
+binds:
+- port: 3001
+  listeners:
+  - routes:
+    - policies:
+        # Enable external authorization
+        extAuthz:
+          host: "localhost:7070"  # Direct host:port reference
+          context:  # Custom context extensions sent to policy engine
+            environment: "development"
+            region: "us-west-1"
+            service: "api-gateway"
+        
+        # Other policies can coexist with ext_authz
+        cors:
+          allowOrigins:
+          - "*"
+          allowHeaders:
+          - "*"
+      backends:
+      - mcp:
+          targets:
+          - name: everything
+            stdio:
+              cmd: npx
+              args: ["@modelcontextprotocol/server-everything"]
