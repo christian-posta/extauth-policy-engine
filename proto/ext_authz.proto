@@ -248,17 +248,20 @@ message AttributeContext {
     // The HTTP request size in bytes. If unknown, it must be -1.
     int64 size = 9;
 
-    // The HTTP request body in bytes. Note that the body is not included in the size field.
-    // If unknown, it must be -1.
-    string body = 10;
+    // The network protocol used with the request, such as "HTTP/1.0", "HTTP/1.1", or "HTTP/2".
+    //
+    // See :repo:`headers.h:ProtocolStrings <source/common/http/headers.h>` for a list of all
+    // possible values.
+    string protocol = 10;
 
-    // The HTTP request body in bytes. Note that the body is not included in the size field.
-    // If unknown, it must be -1.
-    bytes raw_body = 11;
+    // The HTTP request body.
+    string body = 11;
 
-    // The HTTP request body in bytes. Note that the body is not included in the size field.
-    // If unknown, it must be -1.
-    string raw_body_string = 12;
+    // The HTTP request body in bytes. This is used instead of
+    // :ref:`body <envoy_v3_api_field_service.auth.v3.AttributeContext.HttpRequest.body>` when
+    // :ref:`pack_as_bytes <envoy_v3_api_field_extensions.filters.http.ext_authz.v3.BufferSettings.pack_as_bytes>`
+    // is set to true.
+    bytes raw_body = 12;
   }
 
   // The source of a network activity, such as starting a TCP connection.
@@ -490,22 +493,19 @@ message HeaderValueOption {
 message HeaderValue {
   // Header name.
   string key = 1;
-
+  
+  string value = 2;
   // Header value.
   //
   // The same :ref:`format specifier <config_access_log_format>` as used for
   // :ref:`HTTP access logging <config_access_log>` applies here, however
-  // unknown header values are replaced with the empty string instead of `-`.
-  string value = 2;
-
-  // Raw header value. This field is used instead of the ``value`` field when
-  // :ref:`encode_raw_headers <extensions.filters.http.ext_authz.v3.ExtAuthz.encode_raw_headers>`
-  // is set to true.
+  // unknown header values are replaced with the empty string instead of ``-``.
+  //  string value = 2;
   bytes raw_value = 3;
 }
 
 message QueryParameter {
-  // The key of the query parameter.
+  // The key of the query parameter. Case sensitive.
   string key = 1;
 
   // The value of the query parameter.
@@ -514,12 +514,66 @@ message QueryParameter {
 
 message Address {
   oneof address {
-    // IPv4 or IPv6 address, e.g. ``192.0.0.0`` or ``2001:db8::``.
-    string socket_address = 1;
-
-    // Unix domain socket path, e.g. ``/tmp/my.sock``.
-    string pipe = 2;
+    SocketAddress socket_address = 1;
   }
+}
+
+message SocketAddress {
+  enum Protocol {
+    TCP = 0;
+    UDP = 1;
+  }
+
+  Protocol protocol = 1;
+
+  // The address for this socket. :ref:`Listeners <config_listeners>` will bind
+  // to the address. An empty address is not allowed. Specify ``0.0.0.0`` or ``::``
+  // to bind to any address. [#comment:TODO(zuercher) reinstate when implemented:
+  // It is possible to distinguish a Listener address via the prefix/suffix matching
+  // in :ref:`FilterChainMatch <envoy_v3_api_msg_config.listener.v3.FilterChainMatch>`.] When used
+  // within an upstream :ref:`BindConfig <envoy_v3_api_msg_config.core.v3.BindConfig>`, the address
+  // controls the source address of outbound connections. For :ref:`clusters
+  // <envoy_v3_api_msg_config.cluster.v3.Cluster>`, the cluster type determines whether the
+  // address must be an IP (``STATIC`` or ``EDS`` clusters) or a hostname resolved by DNS
+  // (``STRICT_DNS`` or ``LOGICAL_DNS`` clusters). Address resolution can be customized
+  // via :ref:`resolver_name <envoy_v3_api_field_config.core.v3.SocketAddress.resolver_name>`.
+  string address = 2;
+
+  oneof port_specifier {
+    uint32 port_value = 3 ;
+
+    // This is only valid if :ref:`resolver_name
+    // <envoy_v3_api_field_config.core.v3.SocketAddress.resolver_name>` is specified below and the
+    // named resolver is capable of named port resolution.
+    string named_port = 4;
+  }
+
+  // The name of the custom resolver. This must have been registered with Envoy. If
+  // this is empty, a context dependent default applies. If the address is a concrete
+  // IP address, no resolution will occur. If address is a hostname this
+  // should be set for resolution other than DNS. Specifying a custom resolver with
+  // ``STRICT_DNS`` or ``LOGICAL_DNS`` will generate an error at runtime.
+  string resolver_name = 5;
+
+  // When binding to an IPv6 address above, this enables `IPv4 compatibility
+  // <https://tools.ietf.org/html/rfc3493#page-11>`_. Binding to ``::`` will
+  // allow both IPv4 and IPv6 connections, with peer IPv4 addresses mapped into
+  // IPv6 space as ``::FFFF:<IPv4-address>``.
+  bool ipv4_compat = 6;
+
+  // Filepath that specifies the Linux network namespace this socket will be created in (see ``man 7
+  // network_namespaces``). If this field is set, Envoy will create the socket in the specified
+  // network namespace.
+  //
+  // .. note::
+  //    Setting this parameter requires Envoy to run with the ``CAP_NET_ADMIN`` capability.
+  //
+  // .. note::
+  //    Currently only used for Listener sockets.
+  //
+  // .. attention::
+  //     Network namespaces are only configurable on Linux. Otherwise, this field has no effect.
+  string network_namespace_filepath = 7;
 }
 
 message TLSSession {

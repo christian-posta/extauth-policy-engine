@@ -23,7 +23,7 @@ generate:
 
 # Build the binary
 build: deps
-	go build -o policy-engine main.go
+	go build -o policy-engine .
 
 # Run the service
 run: build

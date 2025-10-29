@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -24,6 +23,8 @@ var (
 
 type authorizationServer struct {
 	pb.UnimplementedAuthorizationServer
+	openfgaClient *OpenFGAClient
+	config        *Config
 }
 
 // Check implements the Authorization service Check method
@@ -39,8 +40,8 @@ func (s *authorizationServer) Check(ctx context.Context, req *pb.CheckRequest) (
 	// Log all the context we receive from AgentGateway
 	logRequestContext(attrs)
 
-	// Make authorization decision based on the context
-	decision := evaluatePolicy(attrs)
+	// Make authorization decision based on OpenFGA
+	decision := s.evaluatePolicy(ctx, attrs)
 
 	if decision.allowed {
 		log.Printf("Request ALLOWED: %s", decision.reason)
@@ -108,85 +109,70 @@ func logRequestContext(attrs *pb.AttributeContext) {
 	log.Printf("=======================")
 }
 
-func evaluatePolicy(attrs *pb.AttributeContext) policyDecision {
-	// Extract HTTP request details
-	req := attrs.GetRequest()
-	if req == nil {
-		return policyDecision{allowed: false, reason: "missing request"}
+func (s *authorizationServer) evaluatePolicy(ctx context.Context, attrs *pb.AttributeContext) policyDecision {
+	// Extract principal (user) from JWT claims
+	principal, err := extractPrincipal(attrs)
+	if err != nil {
+		log.Printf("Failed to extract principal: %v", err)
+		return policyDecision{
+			allowed: false,
+			reason:  fmt.Sprintf("Failed to extract principal: %v", err),
+		}
 	}
 
-	httpReq := req.GetHttp()
-	if httpReq == nil {
-		return policyDecision{allowed: false, reason: "missing HTTP request"}
+	log.Printf("Extracted principal: %s", principal)
+
+	// Extract resource (model) from request body
+	resource, err := extractResource(attrs)
+	if err != nil {
+		log.Printf("Failed to extract resource: %v", err)
+		return policyDecision{
+			allowed: false,
+			reason:  fmt.Sprintf("Failed to extract resource: %v", err),
+		}
 	}
 
-	method := httpReq.GetMethod()
-	path := httpReq.GetPath()
-	headers := httpReq.GetHeaders()
+	log.Printf("Extracted resource: %s", resource)
+
+	// Perform OpenFGA authorization check
+	checkParams := CheckParams{
+		User:     principal,
+		Relation: s.config.OpenFGA.Relation,
+		Object:   resource,
+	}
+
+	allowed, err := s.openfgaClient.Check(ctx, checkParams)
+	if err != nil {
+		// Fail closed: deny access if OpenFGA check fails
+		log.Printf("OpenFGA check error: %v", err)
+		return policyDecision{
+			allowed: false,
+			reason:  fmt.Sprintf("Authorization check failed: %v", err),
+		}
+	}
+
+	if !allowed {
+		return policyDecision{
+			allowed: false,
+			reason: fmt.Sprintf("User %s does not have %s permission for %s",
+				principal, s.config.OpenFGA.Relation, resource),
+		}
+	}
+
+	// Request is allowed
 	contextExts := attrs.GetContextExtensions()
-
-	// Policy 1: Deny all requests to /admin/* paths
-	if strings.HasPrefix(path, "/admin") {
-		return policyDecision{
-			allowed: false,
-			reason:  fmt.Sprintf("access denied to admin path: %s", path),
-		}
-	}
-
-	// Policy 2: Require Authorization header for POST requests
-	if method == "POST" {
-		if authHeader, exists := headers["authorization"]; !exists || authHeader == "" {
-			return policyDecision{
-				allowed: false,
-				reason:  "POST requests require Authorization header",
-			}
-		}
-	}
-
-	// Policy 3: Business hours restriction (9 AM - 5 PM)
-	now := time.Now()
-	if now.Hour() < 9 || now.Hour() >= 17 {
-		return policyDecision{
-			allowed: false,
-			reason:  fmt.Sprintf("access restricted to business hours (9 AM - 5 PM), current time: %s", now.Format("3:04 PM")),
-		}
-	}
-
-	// Policy 4: Environment-based restrictions using context extensions
-	if env, exists := contextExts["environment"]; exists {
-		if env == "production" {
-			// In production, require special header
-			if specialHeader, exists := headers["x-production-access"]; !exists || specialHeader != "true" {
-				return policyDecision{
-					allowed: false,
-					reason:  "production environment requires x-production-access header",
-				}
-			}
-		}
-	}
-
-	// Policy 5: Rate limiting based on user agent (simple example)
-	if userAgent, exists := headers["user-agent"]; exists {
-		if strings.Contains(strings.ToLower(userAgent), "bot") {
-			return policyDecision{
-				allowed: false,
-				reason:  "bot user agents are not allowed",
-			}
-		}
-	}
-
-	// If we get here, the request is allowed
 	decision := policyDecision{
 		allowed: true,
-		reason:  "request meets all policy requirements",
+		reason:  fmt.Sprintf("OpenFGA authorization granted: %s has %s on %s", principal, s.config.OpenFGA.Relation, resource),
 		headers: map[string]string{
-			"x-authorized-by": "policy-engine",
-			"x-decision-time": time.Now().Format(time.RFC3339),
+			"x-authorized-by":   "openfga-policy-engine",
+			"x-decision-time":   time.Now().Format(time.RFC3339),
+			"x-authorized-user": principal,
 		},
-		headersToRemove: []string{"authorization"}, // Remove auth header before sending to backend
+		headersToRemove: []string{}, // Keep headers by default
 	}
 
-	// Add environment-specific headers
+	// Add environment-specific headers from context extensions
 	if env, exists := contextExts["environment"]; exists {
 		decision.headers["x-environment"] = env
 	}
@@ -267,17 +253,43 @@ func buildDenyResponse(decision policyDecision) *pb.CheckResponse {
 func main() {
 	flag.Parse()
 
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
+	// Load configuration
+	config, err := LoadConfig()
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	log.Printf("Configuration loaded:")
+	log.Printf("  OpenFGA API URL: %s", config.OpenFGA.APIURL)
+	log.Printf("  OpenFGA Store ID: %s", config.OpenFGA.StoreID)
+	log.Printf("  OpenFGA Model ID: %s", config.OpenFGA.AuthorizationModelID)
+	log.Printf("  OpenFGA Relation: %s", config.OpenFGA.Relation)
+
+	// Initialize OpenFGA client
+	openfgaClient, err := NewOpenFGAClient(config.OpenFGA)
+	if err != nil {
+		log.Fatalf("Failed to create OpenFGA client: %v", err)
+	}
+
+	// Use the port from flag if provided, otherwise use config default
+	if *port != 7070 {
+		config.Port = *port
+	}
+
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", config.Port))
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
 	s := grpc.NewServer()
-	pb.RegisterAuthorizationServer(s, &authorizationServer{})
+	pb.RegisterAuthorizationServer(s, &authorizationServer{
+		openfgaClient: openfgaClient,
+		config:        config,
+	})
 
-	log.Printf("Policy Engine starting on port %d", *port)
-	log.Printf("This service implements the Envoy ext_authz protocol")
-	log.Printf("Configure AgentGateway to use: ext_authz: { target: 'localhost:%d' }", *port)
+	log.Printf("Policy Engine starting on port %d", config.Port)
+	log.Printf("This service implements the Envoy ext_authz protocol with OpenFGA authorization")
+	log.Printf("Configure AgentGateway to use: ext_authz: { target: 'localhost:%d' }", config.Port)
 
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)

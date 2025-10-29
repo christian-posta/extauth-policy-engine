@@ -1,0 +1,15 @@
+model
+  schema 1.1
+
+type user
+
+type group
+  relations
+    define member: [user]
+
+type model
+  relations
+    define owner: [user, group#member]
+    define editor: [user, group#member]
+    define viewer: [user, group#member]
+    define can_access: viewer or editor or owner
