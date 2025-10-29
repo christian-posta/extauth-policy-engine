@@ -44,7 +44,7 @@ func LoadConfig() (*Config, error) {
 			APIURL:               getEnv("OPENFGA_API_URL", "http://localhost:8080"),
 			StoreID:              getEnv("OPENFGA_STORE_ID", ""),
 			AuthorizationModelID: getEnv("OPENFGA_MODEL_ID", ""),
-			Relation:             getEnv("OPENFGA_RELATION", "can_access"),
+			Relation:             getEnv("OPENFGA_RELATION", "can_use"),
 			Timeout:              2 * time.Second,
 			RetryAttempts:        2,
 		},
