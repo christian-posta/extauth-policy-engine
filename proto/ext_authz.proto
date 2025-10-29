@@ -138,6 +138,12 @@ message Status {
   repeated google.protobuf.Any details = 3;
 }
 
+// Metadata holds dynamic metadata associated with the request
+message Metadata {
+  // Filter metadata keyed by filter name (e.g., "agentgateway.jwt.claims")
+  map<string, google.protobuf.Struct> filter_metadata = 1;
+}
+
 message AttributeContext {
   // This message defines attributes for a node that handles a network request.
   // The node can be either a service or an application that sends, forwards,
@@ -282,12 +288,9 @@ message AttributeContext {
   // information to the auth server without modifying the proto definition. It maps to the
   // internal opaque context in the filter chain.
   map<string, string> context_extensions = 10;
-//
-//  // Dynamic metadata associated with the request.
-//  config.core.v3.Metadata metadata_context = 11;
-//
-//  // Metadata associated with the selected route.
-//  config.core.v3.Metadata route_metadata_context = 13;
+
+  // Dynamic metadata associated with the request.
+  Metadata metadata_context = 11;
 
   // TLS session details of the underlying connection.
   // This is not populated by default and will be populated only if the ext_authz filter has

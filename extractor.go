@@ -8,16 +8,36 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// extractPrincipal extracts the user principal from context extensions or headers
+// extractPrincipal extracts the user principal from JWT claims in metadataContext
 // Returns the principal in the format "user:{preferred_username}"
-//
-// NOTE: This is a simplified implementation. In production, you would extract
-// the JWT claims from metadataContext.filterMetadata["agentgateway.jwt.claims"].preferred_username
-// For now, we use context_extensions as a workaround. You can set this in AgentGateway config:
-//   context:
-//     user: "mcp-user"  # or extract from JWT
 func extractPrincipal(attrs *pb.AttributeContext) (string, error) {
-	// Try to get user from context extensions
+	// Try to extract from metadataContext.filterMetadata["agentgateway.jwt.claims"]
+	metadataCtx := attrs.GetMetadataContext()
+	if metadataCtx != nil {
+		filterMetadata := metadataCtx.GetFilterMetadata()
+		if filterMetadata != nil {
+			// Get JWT claims from agentgateway
+			if jwtClaims, ok := filterMetadata["agentgateway.jwt.claims"]; ok {
+				claimsMap := jwtClaims.AsMap()
+
+				// Try to get preferred_username
+				if username, ok := claimsMap["preferred_username"]; ok {
+					if usernameStr, ok := username.(string); ok && usernameStr != "" {
+						return fmt.Sprintf("user:%s", usernameStr), nil
+					}
+				}
+
+				// Fallback to sub (subject)
+				if sub, ok := claimsMap["sub"]; ok {
+					if subStr, ok := sub.(string); ok && subStr != "" {
+						return fmt.Sprintf("user:%s", subStr), nil
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback 1: Try to get user from context extensions
 	contextExts := attrs.GetContextExtensions()
 	if contextExts != nil {
 		if username, ok := contextExts["user"]; ok && username != "" {
@@ -25,7 +45,7 @@ func extractPrincipal(attrs *pb.AttributeContext) (string, error) {
 		}
 	}
 
-	// Fallback: try to extract from x-user header
+	// Fallback 2: Try to extract from x-user header
 	req := attrs.GetRequest()
 	if req != nil {
 		if httpReq := req.GetHttp(); httpReq != nil {
@@ -36,7 +56,7 @@ func extractPrincipal(attrs *pb.AttributeContext) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("no user found in context_extensions['user'] or x-user header")
+	return "", fmt.Errorf("no user found in JWT claims, context_extensions, or x-user header")
 }
 
 // OpenAIRequest represents the structure of an OpenAI API request
