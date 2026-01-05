@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 
 	pb "policy_engine/gen/proto"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -11,18 +12,69 @@ import (
 // extractPrincipal extracts the user principal from JWT claims in metadataContext
 // Returns the principal in the format "user:{preferred_username}"
 func extractPrincipal(attrs *pb.AttributeContext) (string, error) {
-	// Try to extract from metadataContext.filterMetadata["agentgateway.jwt.claims"]
 	metadataCtx := attrs.GetMetadataContext()
 	if metadataCtx != nil {
 		filterMetadata := metadataCtx.GetFilterMetadata()
 		if filterMetadata != nil {
-			// Get JWT claims from agentgateway
+			log.Printf("DEBUG: Checking filter metadata, found %d entries", len(filterMetadata))
+			for key := range filterMetadata {
+				log.Printf("DEBUG: Filter metadata key: %s", key)
+			}
+
+			// Try Envoy JWT filter format: envoy.filters.http.jwt_authn with nested jwt_payload
+			if jwtAuthnData, ok := filterMetadata["envoy.filters.http.jwt_authn"]; ok {
+				log.Printf("DEBUG: Found envoy.filters.http.jwt_authn metadata")
+				jwtAuthnMap := jwtAuthnData.AsMap()
+				log.Printf("DEBUG: jwt_authn map keys: %v", getMapKeys(jwtAuthnMap))
+				
+				if jwtPayload, ok := jwtAuthnMap["jwt_payload"]; ok {
+					log.Printf("DEBUG: Found jwt_payload, type: %T", jwtPayload)
+					// jwt_payload can be a map[string]interface{} or a structpb.Struct
+					var claimsMap map[string]interface{}
+					if payloadMap, ok := jwtPayload.(map[string]interface{}); ok {
+						claimsMap = payloadMap
+					} else if payloadStruct, ok := jwtPayload.(*structpb.Struct); ok {
+						claimsMap = payloadStruct.AsMap()
+					} else {
+						// Try to convert if it's wrapped in another way
+						log.Printf("DEBUG: jwt_payload is unexpected type: %T", jwtPayload)
+						claimsMap = make(map[string]interface{})
+					}
+
+					log.Printf("DEBUG: Claims map keys: %v", getMapKeys(claimsMap))
+
+					// Try to get preferred_username
+					if username, ok := claimsMap["preferred_username"]; ok {
+						if usernameStr, ok := username.(string); ok && usernameStr != "" {
+							log.Printf("DEBUG: Extracted preferred_username: %s", usernameStr)
+							return fmt.Sprintf("user:%s", usernameStr), nil
+						}
+					}
+
+					// Fallback to sub (subject)
+					if sub, ok := claimsMap["sub"]; ok {
+						if subStr, ok := sub.(string); ok && subStr != "" {
+							log.Printf("DEBUG: Extracted sub: %s", subStr)
+							return fmt.Sprintf("user:%s", subStr), nil
+						}
+					}
+				} else {
+					log.Printf("DEBUG: jwt_payload not found in jwt_authn map")
+				}
+			} else {
+				log.Printf("DEBUG: envoy.filters.http.jwt_authn not found in filter metadata")
+			}
+
+			// Fallback: Try agentgateway format: agentgateway.jwt.claims (flat structure)
 			if jwtClaims, ok := filterMetadata["agentgateway.jwt.claims"]; ok {
+				log.Printf("DEBUG: Found agentgateway.jwt.claims metadata")
 				claimsMap := jwtClaims.AsMap()
+				log.Printf("DEBUG: Claims map keys: %v", getMapKeys(claimsMap))
 
 				// Try to get preferred_username
 				if username, ok := claimsMap["preferred_username"]; ok {
 					if usernameStr, ok := username.(string); ok && usernameStr != "" {
+						log.Printf("DEBUG: Extracted preferred_username: %s", usernameStr)
 						return fmt.Sprintf("user:%s", usernameStr), nil
 					}
 				}
@@ -30,11 +82,18 @@ func extractPrincipal(attrs *pb.AttributeContext) (string, error) {
 				// Fallback to sub (subject)
 				if sub, ok := claimsMap["sub"]; ok {
 					if subStr, ok := sub.(string); ok && subStr != "" {
+						log.Printf("DEBUG: Extracted sub: %s", subStr)
 						return fmt.Sprintf("user:%s", subStr), nil
 					}
 				}
+			} else {
+				log.Printf("DEBUG: agentgateway.jwt.claims not found in filter metadata")
 			}
+		} else {
+			log.Printf("DEBUG: filterMetadata is nil")
 		}
+	} else {
+		log.Printf("DEBUG: metadataCtx is nil")
 	}
 
 	// Fallback 1: Try to get user from context extensions
@@ -112,4 +171,13 @@ func structToMap(s *structpb.Struct) map[string]interface{} {
 		return nil
 	}
 	return s.AsMap()
+}
+
+// Helper function to get keys from a map for debugging
+func getMapKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }

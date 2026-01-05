@@ -101,6 +101,28 @@ func logRequestContext(attrs *pb.AttributeContext) {
 		}
 	}
 
+	// Metadata context (JWT claims, filter metadata)
+	metadataCtx := attrs.GetMetadataContext()
+	if metadataCtx == nil {
+		log.Printf("Metadata Context: nil (not present)")
+	} else {
+		filterMetadata := metadataCtx.GetFilterMetadata()
+		if filterMetadata == nil {
+			log.Printf("Filter Metadata: nil")
+		} else if len(filterMetadata) == 0 {
+			log.Printf("Filter Metadata: empty map")
+		} else {
+			log.Printf("Filter Metadata (count: %d):", len(filterMetadata))
+			for key, value := range filterMetadata {
+				if value != nil {
+					log.Printf("  %s: %v", key, value.AsMap())
+				} else {
+					log.Printf("  %s: <nil>", key)
+				}
+			}
+		}
+	}
+
 	// TLS session info
 	if attrs.GetTlsSession() != nil {
 		log.Printf("TLS SNI: %s", attrs.GetTlsSession().GetSni())
